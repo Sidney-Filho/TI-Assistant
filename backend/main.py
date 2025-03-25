@@ -1,75 +1,93 @@
 import os
-import openai
-import pypdf
+from langchain.chains import ConversationalRetrievalChain
+from langchain_openai import ChatOpenAI
+from langchain_community.vectorstores import SupabaseVectorStore
+from langchain_openai import OpenAIEmbeddings
+from supabase.client import Client, create_client
 from dotenv import load_dotenv
-from supabase import create_client
-from langchain.embeddings import OpenAIEmbeddings
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from langchain.memory import ConversationBufferMemory
 
-# 🔐 Carregar variáveis de ambiente
 load_dotenv()
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# 🛠 Configuração do Supabase
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Initialize components once at startup
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(supabase_url, supabase_key)
+openai_api_key = os.getenv("OPENAI_API_KEY")
 
-# 🧠 Configuração do LangChain Embeddings
-embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
+# Initialize embeddings and vector store once
+embeddings = OpenAIEmbeddings()
+vector_store = SupabaseVectorStore(
+    client=supabase,
+    embedding=embeddings,
+    table_name="documents",
+    query_name="match_documents",
+)
 
-# 📂 Caminho do PDF
-pdf_path = "./backend/dados.pdf"
+# Initialize LLM once
+llm = ChatOpenAI(
+    model_name="gpt-o3",
+    temperature=0,
+)
 
-# 📜 Função para extrair texto do PDF
-def extrair_texto_pdf(pdf_path):
-    with open(pdf_path, "rb") as file:
-        leitor = pypdf.PdfReader(file)
-        texto = " ".join([page.extract_text() for page in leitor.pages if page.extract_text()])
-    return texto
+app = FastAPI()
 
-# 🔄 Processar texto extraído e estruturar os dados
-def processar_texto(texto):
-    blocos = texto.split("\n\n")  # Separar por blocos de texto
-    dados = []
-    
-    marca = modelo = None
-    for bloco in blocos:
-        if "HP LaserJet Pro" in bloco:
-            marca, modelo = "HP", "LaserJet Pro M404"
-        elif "Epson EcoTank" in bloco:
-            marca, modelo = "Epson", "EcoTank L3150"
-        elif "Canon PIXMA" in bloco:
-            marca, modelo = "Canon", "PIXMA G3111"
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-        if "Peça necessária:" in bloco:
-            partes = bloco.split("\n")
-            problema = partes[0].strip()
-            peca = partes[1].replace("Peça necessária: ", "").strip()
-            causa = partes[2].replace("Causa provável: ", "").strip()
-            procedimento = " ".join(partes[3:]).replace("Procedimento de troca: ", "").strip()
-            
-            dados.append((marca, modelo, problema, peca, causa, procedimento))
-    
-    return dados
+class QuestionRequest(BaseModel):
+    question: str
+    chat_history: list = []
 
-# ⚡ Inserir no Supabase
-def inserir_no_supabase(dados):
-    for marca, modelo, problema, peca, causa, procedimento in dados:
-        embedding = embeddings.embed_query(problema)  # Criar vetor
-        data = {
-            "marca": marca,
-            "modelo": modelo,
-            "problema": problema,
-            "peca_necessaria": peca,
-            "causa_provavel": causa,
-            "procedimento_troca": procedimento,
-            "embedding": embedding
+# Global conversation chain with memory
+memory = ConversationBufferMemory(
+    memory_key="chat_history",
+    return_messages=True,
+    output_key='answer'
+)
+
+chain = ConversationalRetrievalChain.from_llm(
+    llm=llm,
+    retriever=vector_store.as_retriever(search_kwargs={"k": 3}),
+    memory=memory,
+    return_source_documents=True,
+    output_key='answer'
+)
+
+@app.post("/ask")
+async def ask_question(request: QuestionRequest):
+    try:
+        # Clear previous memory and set the chat history
+        memory.clear()
+        for message in request.chat_history:
+            if isinstance(message, str):
+                memory.chat_memory.add_user_message(message)
+        
+        response = chain({"question": request.question})
+        
+        # Process response
+        answer = response["answer"]
+        source_documents = response["source_documents"]
+        
+        sources = []
+        for doc in source_documents:
+            sources.append({
+                "content": doc.page_content[:100] + "...",
+                "source": doc.metadata.get("source", "Unknown")
+            })
+        
+        return {
+            "answer": answer,
+            "sources": sources,
+            "chat_history": [msg.content for msg in memory.chat_memory.messages]
         }
-        supabase.table("problemas_impressoras").insert(data).execute()
-    
-    print("✅ Dados inseridos no Supabase com embeddings!")
-
-# 🚀 Executar tudo
-texto_extraido = extrair_texto_pdf(pdf_path)
-dados_processados = processar_texto(texto_extraido)
-inserir_no_supabase(dados_processados)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
