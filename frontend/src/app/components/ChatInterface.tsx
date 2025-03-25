@@ -2,44 +2,16 @@
 
 import { useState, useEffect } from 'react';
 import axios from 'axios';
+import { TechnicianModal } from './TechnicianModal';
+// import { supabase } from '@/lib/supabaseClient';
 
-// Defina um tipo para os dados retornados pela API
-type Inseminacao = {
-  id: number;
-  FAZENDA: string;
-  ESTADO: string;
-  MUNICÍPIO: string;
-  "Nº ANIMAL": number;
-  LOTE: string;
-  RAÇA: string;
-  CATEGORIA: string;
-  ECC: number;
-  CICLICIDADE: number;
-  PROTOCOLO: string;
-  "IMPLANTE P4": string;
-  EMPRESA: string;
-  "GnRH NA IA": number;
-  "PGF NO D0": number;
-  "Dose PGF retirada": string;
-  "Marca PGF retirada": string;
-  "Dose CE": string;
-  eCG: string;
-  "DOSE eCG": string;
-  TOURO: string;
-  "RAÇA TOURO": string;
-  "EMPRESA TOURO": string;
-  INSEMINADOR: string;
-  "Nº da IATF": string;
-  DG: number;
-  "VAZIA COM OU SEM CL": number;
-  PERDA: number;
-};
-
+// Types
 type Message = {
   id: string;
   text: string;
   sender: 'user' | 'ai';
   timestamp: Date;
+  sources?: { source: string; content: string }[];
 };
 
 type Chat = {
@@ -47,7 +19,7 @@ type Chat = {
   preview: string;
   timestamp: Date;
   messages: Message[];
-  userName?: string; // Adicionado campo para nome do usuário
+  userName?: string;
 };
 
 type DeleteModalProps = {
@@ -57,6 +29,8 @@ type DeleteModalProps = {
   onCancel: () => void;
 };
 
+
+// Delete Modal Component
 function DeleteModal({ isOpen, chatToDelete, onConfirm, onCancel }: DeleteModalProps) {
   if (!isOpen || !chatToDelete) return null;
 
@@ -86,6 +60,7 @@ function DeleteModal({ isOpen, chatToDelete, onConfirm, onCancel }: DeleteModalP
   );
 }
 
+// Helper functions
 const generateId = (() => {
   let counter = 0;
   return () => {
@@ -107,7 +82,6 @@ const FormattedTime = ({ date }: { date: Date }) => {
   })}</span>;
 };
 
-// Função para detectar o nome do usuário em uma mensagem
 const extractUserName = (message: string): string | null => {
   const patterns = [
     /(?:me\s+chamo|meu\s+nome\s+(?:é|e)|sou\s+(?:o|a))\s+([A-Z][a-zÀ-ú]+)/i,
@@ -125,6 +99,7 @@ const extractUserName = (message: string): string | null => {
   return null;
 };
 
+// Main Component
 export default function ChatInterface() {
   const [currentChat, setCurrentChat] = useState<Chat>({
     id: generateId(),
@@ -138,8 +113,8 @@ export default function ChatInterface() {
   const [chatToDelete, setChatToDelete] = useState<Chat | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [userName, setUserName] = useState<string>('');
+  const [showTechModal, setShowTechModal] = useState(false);
 
-  // Carregar o nome do usuário do localStorage quando o componente é montado
   useEffect(() => {
     const savedName = localStorage.getItem('userName');
     if (savedName) {
@@ -173,7 +148,7 @@ export default function ChatInterface() {
       preview: 'Novo Chat',
       timestamp: new Date(),
       messages: [],
-      userName: userName // Manter o nome do usuário no novo chat
+      userName: userName
     };
 
     setCurrentChat(newChat);
@@ -204,12 +179,10 @@ export default function ChatInterface() {
     e.preventDefault();
     if (!inputText.trim() || isLoading) return;
 
-    // Verificar se o usuário está se apresentando e extrair nome
     const detectedName = extractUserName(inputText);
     if (detectedName) {
       setUserName(detectedName);
       localStorage.setItem('userName', detectedName);
-      console.log('Nome do usuário salvo:', detectedName);
     }
 
     const userMessage: Message = {
@@ -223,7 +196,7 @@ export default function ChatInterface() {
       ...currentChat,
       preview: inputText,
       messages: [...currentChat.messages, userMessage],
-      userName: detectedName || userName // Atualizar o nome no chat se for detectado
+      userName: detectedName || userName
     };
 
     setCurrentChat(updatedChat);
@@ -231,55 +204,21 @@ export default function ChatInterface() {
     setIsLoading(true);
 
     try {
-      // Usar o nome do usuário atual ou o recém-detectado
-      const currentName = detectedName || userName;
-      
-      // Envia o histórico da conversa junto com a mensagem e o nome do usuário
-      const response = await axios.post('http://localhost:8000/chat', {
-        message: inputText,
-        context: currentChat.messages.map(msg => ({ role: msg.sender, content: msg.text })),
-        user_name: currentName // Envia o nome do usuário para o backend
+      const response = await axios.post('http://localhost:8000/ask', {
+        question: inputText,
+        username: detectedName || userName,
+        chat_history: currentChat.messages
+          .filter(msg => msg.sender === 'user')
+          .map(msg => msg.text)
       });
 
-      console.log('Resposta:', response.data);
-
-      // Verifica se temos uma resposta do tipo { response: string, data: any[] }
-      if (response.data.response) {
+      if (response.data.answer) {
         const aiMessage: Message = {
           id: generateId(),
-          text: response.data.response,
+          text: response.data.answer,
           sender: 'ai',
-          timestamp: new Date()
-        };
-
-        setCurrentChat(prev => ({
-          ...prev,
-          messages: [...prev.messages, aiMessage]
-        }));
-      } else if (Array.isArray(response.data)) {
-        // Se for array direto, formata os dados (compatibilidade)
-        const formattedResponse = response.data
-          .map((item: Inseminacao) => {
-            return `
-              Fazenda: ${item.FAZENDA},
-              Estado: ${item.ESTADO},
-              Município: ${item.MUNICÍPIO},
-              Nº Animal: ${item["Nº ANIMAL"]},
-              Raça: ${item.RAÇA},
-              Categoria: ${item.CATEGORIA},
-              ECC: ${item.ECC},
-              Protocolo: ${item.PROTOCOLO},
-              Inseminador: ${item.INSEMINADOR},
-              Perda: ${item.PERDA === 1 ? "Sim" : "Não"}
-            `;
-          })
-          .join("\n\n");
-        
-        const aiMessage: Message = {
-          id: generateId(),
-          text: formattedResponse,
-          sender: 'ai',
-          timestamp: new Date()
+          timestamp: new Date(),
+          sources: response.data.sources
         };
 
         setCurrentChat(prev => ({
@@ -287,10 +226,9 @@ export default function ChatInterface() {
           messages: [...prev.messages, aiMessage]
         }));
       } else {
-        // Fallback para objetos desconhecidos
         const aiMessage: Message = {
           id: generateId(),
-          text: "Recebi sua mensagem, mas não sei como processar a resposta.",
+          text: "Recebi sua pergunta, mas não consegui encontrar informações relevantes. Você poderia reformular sua pergunta?",
           sender: 'ai',
           timestamp: new Date()
         };
@@ -319,6 +257,112 @@ export default function ChatInterface() {
     }
   };
 
+  const handleScheduleVisit = async (techId: number, date: string) => {
+    try {
+      // 1. Validação básica
+      if (!techId || !date) {
+        throw {
+          message: 'Dados incompletos para agendamento',
+          details: { techId, date }
+        };
+      }
+  
+      const selectedDate = new Date(date);
+      if (selectedDate < new Date()) {
+        throw { message: 'Não é possível agendar para datas passadas' };
+      }
+  
+      // 2. Verificar se já existe agendamento para o mesmo técnico no mesmo horário
+      const existingAppointment = [...pastChats, currentChat].some(chat => {
+        return chat.messages.some(message => {
+          if (message.sender === 'ai' && message.text.includes('Visita confirmada')) {
+            const techMatch = message.text.match(/Técnico (\d+)/);
+            const dateMatch = message.text.match(/para (\d{2}\/\d{2}\/\d{4}, \d{2}:\d{2})/);
+            
+            if (techMatch && dateMatch) {
+              const existingTechId = parseInt(techMatch[1]);
+              const existingDate = new Date(
+                dateMatch[1].replace(
+                  /(\d{2})\/(\d{2})\/(\d{4}), (\d{2}:\d{2})/, 
+                  '$3-$2-$1T$4:00'
+                )
+              );
+              
+              return existingTechId === techId && 
+                     existingDate.getTime() === selectedDate.getTime();
+            }
+          }
+          return false;
+        });
+      });
+  
+      if (existingAppointment) {
+        throw { 
+          message: `O Técnico ${techId} já possui um agendamento simulado para este horário` 
+        };
+      }
+  
+      // 3. Simulação de dados do técnico (sem consulta ao Supabase)
+      const technicianData = {
+        nome: `Técnico ${techId}` // Nome simulado baseado no ID
+      };
+  
+      // 4. Simulação de agendamento (sem inserção no Supabase)
+      const newAppointment = {
+        id: Math.floor(Math.random() * 1000), // ID simulado
+        tecnico_id: techId,
+        tecnico_nome: technicianData.nome,
+        data_visita: date,
+        status: 'pendente',
+        cliente: userName || 'Anônimo'
+      };
+  
+      // 5. Mensagem de confirmação
+      const formattedDate = selectedDate.toLocaleString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+  
+      const confirmationMessage: Message = {
+        id: generateId(),
+        text: `Visita confirmada com ${technicianData.nome} para ${formattedDate}\nCódigo da visita: AG-${newAppointment.id}`,
+        sender: 'ai',
+        timestamp: new Date()
+      };
+      
+      setCurrentChat(prev => ({
+        ...prev,
+        messages: [...prev.messages, confirmationMessage]
+      }));
+  
+    } catch (error: unknown) {
+      let errorMessage = "Erro ao simular agendamento. Tente novamente.";
+      
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      } else if (typeof error === 'object' && error !== null && 'message' in error) {
+        errorMessage = String((error as { message: unknown }).message);
+      }
+  
+      console.error('Erro na simulação de agendamento:', error);
+      
+      const errorMessageToShow: Message = {
+        id: generateId(),
+        text: errorMessage,
+        sender: 'ai',
+        timestamp: new Date()
+      };
+      
+      setCurrentChat(prev => ({
+        ...prev,
+        messages: [...prev.messages, errorMessageToShow]
+      }));
+    }
+  };
+
   return (
     <main className="flex min-h-screen">
       <DeleteModal
@@ -328,7 +372,12 @@ export default function ChatInterface() {
         onCancel={() => setChatToDelete(null)}
       />
 
-      {/* Overlay para mobile */}
+      <TechnicianModal
+        isOpen={showTechModal}
+        onClose={() => setShowTechModal(false)}
+        onSchedule={handleScheduleVisit}
+      />
+
       {isSidebarOpen && (
         <div 
           className="fixed inset-0 bg-black bg-opacity-50 z-30 lg:hidden"
@@ -336,7 +385,6 @@ export default function ChatInterface() {
         />
       )}
 
-      {/* Barra lateral */}
       <div
         className={`fixed lg:relative inset-y-0 left-0 w-64 bg-gray-50 border-r border-gray-200 p-4 transform transition-transform duration-200 ease-in-out ${
           isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
@@ -399,9 +447,7 @@ export default function ChatInterface() {
         </div>
       </div>
 
-      {/* Conteúdo principal */}
       <div className="flex-1 flex flex-col bg-white">
-        {/* Header com Menu Hamburger */}
         <div className="p-4 border-b border-gray-200 flex items-center">
           <button
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -422,7 +468,7 @@ export default function ChatInterface() {
             </svg>
           </button>
 
-          <h1 className="text-xl font-semibold text-gray-800">AI Assistant</h1>
+          <h1 className="text-xl font-semibold text-gray-800">Assistente Técnico de Impressoras</h1>
           
           {userName && (
             <span className="ml-auto text-sm text-gray-600">
@@ -431,15 +477,14 @@ export default function ChatInterface() {
           )}
         </div>
 
-        {/* Mensagens */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {currentChat.messages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-center text-gray-500">
-              <h2 className="text-xl font-medium mb-2">Bem-vindo ao Assistente de Inseminação</h2>
+              <h2 className="text-xl font-medium mb-2">Bem-vindo ao Assistente Técnico de Impressoras</h2>
               <p className="max-w-md">
                 {userName 
                   ? `Olá ${userName}! Como posso ajudar você hoje?` 
-                  : "Para uma experiência personalizada, por favor se apresente (exemplo: 'Me chamo João')"}
+                  : "Por favor, se apresente (exemplo: 'Me chamo João')"}
               </p>
             </div>
           )}
@@ -478,27 +523,31 @@ export default function ChatInterface() {
           )}
         </div>
 
-        {/* Input de formulário */}
         <form onSubmit={handleSubmit} className="border-t border-gray-200 p-4">
           <div className="flex space-x-2">
             <input
               type="text"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              placeholder={userName ? "Digite sua mensagem..." : "Diga seu nome ou faça uma pergunta..."}
+              placeholder={userName 
+                ? "Digite sua pergunta sobre impressoras..." 
+                : "Diga seu nome ou faça uma pergunta sobre impressoras..."}
               className="text-black flex-1 p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               disabled={isLoading}
             />
             <button
+              type="button"
+              onClick={() => setShowTechModal(true)}
+              className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
+            >
+              Agendar Visita
+            </button>
+            <button
               type="submit"
               disabled={isLoading}
-              className={`
-                px-4 py-2 bg-blue-500 text-white rounded-lg
-                hover:bg-blue-600 
-                focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2
-                disabled:opacity-50 disabled:cursor-not-allowed
-                transition-colors duration-200
-              `}
+              className={`px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors ${
+                isLoading ? 'opacity-50 cursor-not-allowed' : ''
+              }`}
             >
               Enviar
             </button>
